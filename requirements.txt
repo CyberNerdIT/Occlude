@@ -1,0 +1,16 @@
+transformers>=4.40
+torch>=2.2
+torchvision>=0.17
+pillow>=10.0
+numpy>=1.24
+ultralytics>=8.2
+opencv-python>=4.9
+insightface>=0.7
+onnxruntime>=1.16
+scipy>=1.10
+tqdm>=4.65
+rich>=13.0.0
+# Optional — only used on the CUDA fast path (NVDEC decode). The
+# pipeline gracefully falls back to cv2.VideoCapture when torchcodec
+# is not importable, so Mac/CPU installs can leave this unpinned.
+torchcodec>=0.4; platform_system != "Darwin"

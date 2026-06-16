@@ -1,0 +1,40 @@
+__pycache__/
+*.py[cod]
+*.pyo
+
+.venv/
+venv/
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+*.egg-info/
+dist/
+build/
+
+# Model weights
+*.pt
+*.onnx
+*.bin
+*.safetensors
+
+# Processed video artifacts
+test_output/
+test_video_real/
+test_images_video/
+*.mp4
+
+# Debug logs
+/tmp/occlude_*.log
+*.log
+
+# Local dev automation / tooling (not part of the project)
+afk-ralph.sh
+ralph-once.sh
+.playwright-mcp/
+
+# macOS
+.DS_Store

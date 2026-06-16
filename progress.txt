@@ -1,0 +1,160 @@
+Deleted dead `_segment` method from Perception (37 lines); _segment_batch is the sole production path.
+Added carry_forward_frames, gender_vote_burst, gender_vote_window, blur_vote_window, bbox_smoothing_frames as Tracker.__init__ keyword args; tests updated to inject small values.
+Moved diagnostic instrumentation in cli.py behind OCCLUDE_DEBUG=1; --help now imports with no file writes to /tmp.
+Buffered TRACK_LOG_PATH writes: Tracker._log_fh opened once in VideoProcessor.process and closed in finally, eliminating per-track open/close syscalls.
+Extracted device-memory cleanup into _cleanup_device_memory context manager in Perception; new devices require editing one place.
+Cast seg_model to fp16 on MPS/CUDA; pixel_values cast to model dtype in _segment_batch; verified ≤2/16384 pixel differences (tied-argmax boundary cases) on all 7 test images.
+Applied torch.compile(seg_model, dynamic=True) after fp16 cast on MPS/CUDA; dynamic=True avoids per-frame recompiles for variable person counts. CUDA/Colab runs now use `--device cuda` so missing CUDA support fails before a long job starts.
+Split blur_region into prepare_blur_mask + apply_blur_mask; last_blur_targets now stores precomputed float alpha masks so skip frames skip cv2.dilate + cv2.GaussianBlur; shared _blur_region_bounds helper prevents region math drift; 7 new tests added, all 37 pass.
+Added Perception.make_label_masks(); Person now carries label_masks dict[str, np.ndarray]; rules.py drops SEG_LABELS import and _LABEL_IDX — all helpers consume named boolean arrays; swapping the segmentation model requires editing only Perception.
+Raised MEMORY_CLEANUP_EVERY from 1 to 25; updated stale comment — GC and device-cache eviction now handled in Perception._segment_batch, so only the macOS heap-pressure hint remains; runtime RSS profile deferred to a real video run.
+Synced PRD.md task list: marked all 9 remaining [ ] items as [x] to reflect that every PRD task is now implemented in code (all 37 tests pass).
+
+=== Pipeline overhaul — Step 0 baseline ===
+Added occlude/pipeline/bench.py + `occlude --benchmark --seconds N` CLI flag. VideoProcessor.process() gained max_frames + skip_mux kwargs (additive; existing callers untouched). All 48 tests still pass.
+
+Mac/MPS baseline (smoke run, --seconds 5, The-Thinking-Game-h264.mp4):
+  bench device=mps input=The-Thinking-Game-h264.mp4 seconds=5.0 frames=120 wall=2.56s fps=46.90 gpu_util_avg=n/a (0 samples) peak_vram=n/a hash=6f252e08e97df81e0c902a9dc359eaa3
+
+CUDA baseline still to be recorded on the A100 once we get there. The frame-hash MD5 above is the per-frame quality lock for the MPS path through steps 1-4 (any unintentional bit shift surfaces as a hash diff).
+
+=== Step 1 — prepare_blur_mask + apply_blur_mask onto torch (CUDA only) ===
+- Added _prepare_blur_mask_torch + _ellipse_kernel in occlude/pipeline/video.py. cv2.dilate(MORPH_ELLIPSE) replicated as conv-with-elliptical-kernel + >0 threshold; cv2.GaussianBlur replicated with the existing _cv2_gaussian_kernel1d. Constant-zero pad for the dilation (matches cv2 BORDER_CONSTANT), reflect pad for the Gaussian (matches BORDER_REFLECT_101).
+- prepare_blur_mask now dispatches: torch tensor on _BLUR_DEVICE when CUDA is available, numpy.ndarray otherwise. Mac/CPU path is untouched.
+- apply_blur_mask + _apply_blur_mask_torch accept either np.ndarray or torch.Tensor masks; CUDA path skips the per-frame torch.from_numpy(mask).to(device) bounce. cv2 fallback converts back to numpy defensively for test seams.
+- Person.seg_mask and _TrackedPerson.last_seg_mask deliberately left as numpy: their consumers (rules.py, Tracker carry-forward) would force ripple changes that can't be CUDA-validated from this Mac dev box. The per-frame waste targeted by this step lives in prepare/apply, not in seg storage.
+- Tests: 5 new torch-path tests in tests/test_blur.py, exercised on torch.device('cpu') so Mac CI validates the same code path A100 will run. All 53 tests pass.
+- Mac bench hash unchanged: 6f252e08e97df81e0c902a9dc359eaa3 (5s, 120 frames, ~47 fps) — proves the Mac/OpenCV path is bit-identical to pre-Step-1.
+
+Steps 2-4 deferred — Mac dev box has no CUDA, so the perception batching, NVDEC/NVENC I/O, and CUDA-streamed async pipeline can't be run-validated here. Next session: run --benchmark on the A100 to establish the CUDA baseline (and validate Step 1's CUDA path) before sequencing Step 2.
+
+A100 session protocol (when you get there):
+  1. Confirm torch sees CUDA before benching, else the Step-1 CUDA blur dispatch is unavailable:
+       python -c "from occlude.pipeline.video import _BLUR_DEVICE; print(_BLUR_DEVICE)"  # must print 'cuda'
+  2. Establish two CUDA hashes:
+       a) git checkout the pre-Step-1 commit → --benchmark → record H0 (pre-Step-1 CUDA baseline)
+       b) git checkout current  → --benchmark → record H1 (post-Step-1 CUDA hash)
+       H1 != H0 is EXPECTED — torch Gaussian sums float in a different order than cv2.
+  3. Lock H1. Steps 2/3/4 must reproduce H1 exactly. Any hash drift in those steps is a regression to investigate, not "expected float math noise."
+
+Residual CPU bounces left in the hot path (out of scope for the narrowed Step 1, in scope for Step 2):
+  - Person.seg_mask is still np.ndarray, so _prepare_blur_mask_torch does one torch.from_numpy(...).to(device) per detected person per frame. Small (≤128×128 int32) but per-detection.
+  - perception.py:457 `pred_small.detach().to("cpu").numpy()` in _segment_batch — the big copy. Moving Person.seg_mask to a CUDA tensor and propagating through rules.py removes both bounces in one go.
+
+=== A100 baseline locked (H1 — post-Step-1) ===
+First run (JIT-polluted, includes torch.compile warm-up of SegFormer):
+  bench device=cuda input=test_video.mp4 (intel store-aisle-detection.mp4)
+  frames=1798 wall=215.47s fps=8.34 gpu_util_avg=33.4% (1907 samples)
+  peak_vram=2660MB hash=396d6e6d1d175e8ef6b37088136f60ca
+
+H1 hash: 396d6e6d1d175e8ef6b37088136f60ca — LOCKED. Steps 2-4 must reproduce this exact MD5 against the same input.
+
+Observations:
+- GPU util 33% confirms the under-utilization premise; Steps 2-4 have real headroom (target 70-90%).
+- Peak VRAM 2.66 GB on a 40 GB A100 — huge batching headroom.
+- fps 8.34 IS steady-state — confirmed by user re-running cell §7 with the same number. JIT amortizes over 1798 frames so per-frame overhead is small.
+- cv2 read the wrong CAP_PROP_FPS for the Intel sample (max_frames=3921 but only 1798 frames in the file). Doesn't affect the bench; flagging in case a future Step adds fps-dependent logic.
+
+H1 published numbers (Step 2-4 denominator):
+  fps 8.34, util 33.4%, VRAM 2.66 GB, hash 396d6e6d1d175e8ef6b37088136f60ca
+  Target after Step 4: ≥25 fps (3×), util ≥70%, hash unchanged.
+
+=== Steps 2-4 implemented (Mac path validated, CUDA path pending A100 bench) ===
+
+Step 2 — batched perception across B consecutive frames:
+- Perception.detect_and_segment_batch(images: list[Image]) — one YOLO predict, one SegFormer forward over the union of all crops across B frames. detect_and_segment becomes a thin wrapper.
+- VideoProcessor.frame_stride dropped. New perception_batch param (CLI: --perception-batch). Defaults: 4 on CUDA, 1 on MPS/CPU.
+- Main loop restructured to gather B frames, perceive in one shot, then per-frame tracker.update + blur + write in source order (tracker is stateful in source order).
+- FakePerceiver/ScriptedPerceiver compatibility: VideoProcessor falls back to looping detect_and_segment when detect_and_segment_batch isn't on the perceiver. Protocol surface unchanged → existing test fakes untouched.
+
+Step 3 — NVDEC decode + NVENC encode:
+- New occlude/pipeline/io_cuda.py with CudaVideoReader (torchcodec NVDEC) and cuda_video_writer context manager (ffmpeg subprocess with h264_nvenc).
+- cuda_io_available() gates everything: torchcodec importable + torch.cuda.is_available() + ffmpeg on PATH. Mac/CPU keep cv2; CUDA runs can use --require-cuda-io to make NVDEC/NVENC mandatory.
+- VideoProcessor.process picks the I/O via use_cuda_io; both readers expose .read/.release/fps/width/height/total_frames so the main loop is branch-free.
+- Writer is wrapped behind write_frame() + close_writer() closures so swapping I/O doesn't ripple.
+- torchcodec added to requirements.txt (skipped on Darwin).
+
+Step 4 — async pipelining (decode/process/encode):
+- New occlude/pipeline/async_runner.py: run_async_pipeline() spins decode + encode workers on daemon threads with bounded queues (maxsize 2*B). Main thread runs the perception batch synchronously.
+- NVDEC and NVENC share the GPU with SegFormer compute via dedicated codec engines (not SMs), so threading the CPU-side orchestration is what unlocks the overlap. Explicit CUDA streams skipped — they wouldn't help here because blur depends on perception output for the same frame.
+- Source order preserved by FIFO queues: no reorder buffer needed.
+- VideoProcessor.process dispatches to async on use_cuda_io, sync loop on Mac. Sync loop refactored to share the same _process_batch closure → single blur math definition.
+
+Mac validation throughout all four steps:
+- 53/53 tests pass after each step.
+- 5-second bench hash unchanged at 6f252e08e97df81e0c902a9dc359eaa3 (the original Mac baseline). Every step is a no-op on the Mac path by construction; CUDA gets the new behavior.
+
+A100 validation pending — user runs the updated notebook on Colab to:
+  1. Confirm hash still matches H1 = 396d6e6d1d175e8ef6b37088136f60ca (locked from post-Step-1 bench).
+  2. Measure new fps + GPU util. Target: ≥3× H1 fps (≥25 fps), util ≥70%.
+
+=== Hardening pass — 5 improvement areas (Mac dev box) ===
+
+Context: review flagged five gaps. Implemented what's possible without
+an A100; the GPU throughput/hash validation above is explicitly NOT
+closed by this pass and still owes a real CUDA run.
+
+1. Repo hygiene: .gitignore now covers *.log, .playwright-mcp/, and the
+   two local ralph automation scripts (they point at a *different* repo
+   path — leftover). uv.lock left untracked (commit it if you want
+   reproducible uv installs; not auto-staged).
+
+2. Configurable detector: --detector-model / Perception(detector_model=)
+   / VideoProcessor(detector_model=). DEFAULT stays yolov8n.pt on EVERY
+   device — deliberately NOT changed to a larger model on CUDA, because
+   that would silently invalidate the H1 hash lock above. The knob lets
+   a CUDA run opt into yolov8m/l for better small/distant recall (VRAM
+   headroom is huge: 2.66 GB of 40 GB). Tests pin the default + plumbing.
+
+3+4. Eval harness (occlude/eval/ + scripts/eval_accuracy.py): runs the
+   real perception stack + rule layer over labels.json and reports a
+   confusion matrix AND a coverage map. The coverage map is the honest
+   core: it flags rule branches with ZERO labelled positive examples
+   (female_bare_legs, no_face_overblur) as UNVALIDATED placeholders.
+   The report header states plainly that the bundled images are the SAME
+   set the thresholds were tuned on, so its pass-rate is TRAINING-SET /
+   regression performance, NOT held-out accuracy. Logic is unit-tested
+   weights-free (tests/test_eval.py); the real-model run is a deliberate
+   script, not CI.
+   First live MPS run surfaced one real, VERIFIED finding (NOT fixed —
+   that's the threshold-tuning work this harness now enables):
+     - 06_modest_woman_abaya: a genuine single-subject FALSE POSITIVE.
+       Verified by re-running with len(people) + raw reason: YOLO finds
+       exactly 1 person (the abaya woman, area 938k — not a background
+       person, so NOT a harness artifact). Live Hat+Scarf:Hair =
+       14832:32283 → ratio 0.459, just below HATSCARF_HAIR_RATIO=0.5, so
+       the covered-head tiebreaker doesn't fire and she's blurred for
+       "uncovered hair". rules.py documents the TUNED value as
+       18388:27489 → ratio 0.67 (covered). Confirmed train/test gap: the
+       live image→YOLO-crop→SegFormer mask tags less Scarf / more Hair
+       than the dumped mask the threshold was fit on, straddling 0.5.
+     - 03_immodest_woman_dress: NOT a rule error. Live mask shows
+       Hat+Scarf:Hair = 0:8756 (no scarf, visible hair), so blurring via
+       uncovered_hair is correct — she violates on hair AND sleeveless
+       arms. The original bare_arms-only label was too narrow; label
+       widened to accept either branch. Harness was right, label was not.
+
+5. Async-runner orchestration tests (tests/test_async_runner.py): the
+   CUDA fast path's decode/process/encode wiring is device-independent
+   Python threading with previously ZERO coverage. Tests now pin source
+   ordering, partial-tail EOF, max_frames, progress cadence, and error
+   propagation from each of the three stages — all under a watchdog so a
+   reintroduced hang FAILS instead of blocking.
+   BUG FOUND + FIXED: the cleanup-path `encode_q.put(_SENTINEL)` had no
+   timeout. When the encode worker dies mid-run and the bounded queue is
+   full, that put blocked forever — a deadlock in the very path meant to
+   surface the error (a mid-run NVENC failure on the A100 would hang the
+   process instead of raising). Now a bounded put(timeout=5) + swallow
+   Full. test_encode_error_propagates_without_deadlock is the regression
+   guard (it hung before the fix, passes after).
+   Also added io_cuda gate tests (tests/test_io_cuda.py): the
+   availability gate that prevents the "ffmpeg lacks h264_nvenc → encoder
+   dies on frame 1 → stall" failure is now pinned.
+
+   NOT done from this box (needs A100): the sync-vs-async bit-equality
+   claim (video.py:~656) can only be checked on CUDA, since the async
+   path is gated behind use_cuda_io. The run_async_pipeline unit tests
+   are the substitute for the *orchestration*; integration-level output
+   equality is still part of what the A100 run owes.
+
+Test count: 57 → 79 (+22). All pass on the Mac/MPS path.
