@@ -1,6 +1,6 @@
 [project]
 name = "occlude"
-version = "0.0.1"
+version = "0.0.2"
 description = "Blur immodestly dressed people in videos. Video in, video out."
 readme = "README.md"
 requires-python = ">=3.10"
