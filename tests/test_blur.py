@@ -9,7 +9,7 @@ Verifies that:
 import numpy as np
 import torch
 
-from occlude.pipeline.video import (
+from occlude.pipeline.blur import (
     SILHOUETTE_DILATE_FRAC,
     SILHOUETTE_DILATE_MIN_PX,
     SILHOUETTE_FEATHER_FRAC,
@@ -220,7 +220,7 @@ def test_prepare_blur_mask_torch_matches_numpy_shape_and_range():
     which is then masked by the wide Gaussian feather anyway."""
     import torch
 
-    from occlude.pipeline.video import _prepare_blur_mask_torch
+    from occlude.pipeline.blur import _prepare_blur_mask_torch
 
     bbox = (100, 100, 200, 200)
     seg = np.ones((100, 100), dtype=np.int32)
@@ -239,7 +239,7 @@ def test_prepare_blur_mask_torch_fallback_path():
     """No seg_mask → feathered rectangle, on the torch path."""
     import torch
 
-    from occlude.pipeline.video import _prepare_blur_mask_torch
+    from occlude.pipeline.blur import _prepare_blur_mask_torch
 
     bbox = (100, 100, 200, 200)
     np_mask = prepare_blur_mask(bbox, None, (FH, FW))
@@ -252,7 +252,7 @@ def test_prepare_blur_mask_torch_fallback_path():
 def test_prepare_blur_mask_torch_degenerate_returns_empty():
     import torch
 
-    from occlude.pipeline.video import _prepare_blur_mask_torch
+    from occlude.pipeline.blur import _prepare_blur_mask_torch
 
     t_mask = _prepare_blur_mask_torch(
         (100, 100, 100, 100), None, (FH, FW), torch.device("cpu")
@@ -292,7 +292,7 @@ def test_prepare_blur_mask_torch_accepts_tensor_seg():
     used once Person.seg_mask migrates to GPU tensors in step 2/3."""
     import torch
 
-    from occlude.pipeline.video import _prepare_blur_mask_torch
+    from occlude.pipeline.blur import _prepare_blur_mask_torch
 
     bbox = (100, 100, 200, 200)
     seg = torch.ones((100, 100), dtype=torch.int32)

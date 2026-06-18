@@ -2,7 +2,7 @@
 
 OCCLUDE is a command-line tool that takes a video file and writes back the same video with immodestly dressed people blurred out, audio left intact. It's for muslims who want to watch otherwise-fine content (documentaries, lectures, talks) without the immodest imagery that gets mixed into it.
 
-I kept skipping videos I was genuinely curious about because of what was in frame, not what was being said. The friction is the imagery, not the subject, so I wanted something that hands me back the same file with the unwanted imagery blurred. Great real-time browser blockers like HaramBlur exist and really needed, but processing every frame live naturally forces accuracy tradeoffs (flicker, missed frames, false positives). OCCLUDE runs offline on a file instead, so my main goal is getting it right as much as possible, even though it takes longer.
+I kept skipping videos I was genuinely curious about because of what was in frame, not what was being said. The friction is the imagery, not the subject, so I wanted something that hands me back the same file with the unwanted imagery blurred. Great real-time browser blockers like HaramBlur exist and are really needed, but processing every frame live forces accuracy tradeoffs (flicker, missed frames, false positives). OCCLUDE runs offline on a whole file instead, so it can take its time and get it right.
 
 ```bash
 occlude --input documentary.mp4
@@ -13,13 +13,32 @@ occlude --input documentary.mp4
 
 The decision is per person and binary: someone is either fully blurred or not at all. There's no partial blur of a single body part. When a person is blurred, the blur traces their silhouette with a soft feathered edge rather than a hard rectangle.
 
-For men, the whole person is to be blurred if skin shows between the navel and the knee. Shirtless is the main case (it exposes the navel); shorts and bare thighs are the secondary one.
+For men, the whole person is blurred if skin shows between the navel and the knee. Shirtless is the main case; shorts and bare thighs are the secondary one.
 
-For women, the whole person is to be blurred if any of these is visible: uncovered hair, bare arms, bare legs, or exposed neck and chest. Visible hair is the dominant trigger in practice.
+For women, the whole person is blurred if any of these is visible: uncovered hair, bare arms, bare legs, or exposed neck and chest.
 
-People dressed modestly are left as is: a woman in full hijab, a man in a t-shirt and full-length trousers. Faces of modestly dressed people, backgrounds, objects, animals, and text overlays are not touched.
+People dressed modestly are left as is: a woman in full hijab, a man in a t-shirt and full-length trousers. Faces of modestly dressed people, backgrounds, objects, animals, cartoon/CGI figures, and text overlays are not touched. A person who appears to be a child (under 13) is never blurred. When the judgment is genuinely uncertain about a real adult, OCCLUDE leans toward blurring rather than missing.
 
-When it can't tell (no face detected, or low-confidence gender) it leans toward blurring rather than missing: an unanchored person gets blurred, and uncertain gender falls back to the stricter female ruleset. And a person whose estimated age comes back at 12 or under is never blurred. That age signal is noisy, so the cutoff is deliberately low.
+## How it works (v0.1 — offline, three passes)
+
+OCCLUDE has the whole file on disk, so it does not process frame-by-frame like a live filter. It runs three passes, each free to use the whole video:
+
+```
+input.mp4
+  Pass 1  detect + track   RT-DETR finds people every frame; IoU association
+                           links them into per-person "tracklets", split at
+                           shot cuts.
+  Pass 2  judge            a vision-language model (Qwen2.5-VL) looks at each
+                           tracklet's clearest frames once and returns a
+                           structured verdict: real human? male/female?
+                           child? modest or not?  One decision per person.
+  Pass 3  render           the verdict is applied across the person's entire
+                           on-screen span; SAM2 cuts a clean silhouette for
+                           the people being blurred; ffmpeg muxes the audio.
+output_occluded.mp4
+```
+
+Deciding **once per person and applying it across their whole span** is what removes the flicker and the "blurs a second late" problem that a streaming filter has — there is no per-frame decision to wobble, and a person flagged on frame 200 is blurred from frame 1 of that shot. Letting a model that can actually *reason* make the modesty call (instead of stacking a clothing segmenter and a brittle gender classifier) is what fixes the subtler errors: a clean-shaven man read as a woman, a CGI character treated as a person, a crowd shown from behind blurred into mud.
 
 ## Install
 
@@ -27,19 +46,21 @@ When it can't tell (no face detected, or low-confidence gender) it leans toward 
 pip install occlude
 ```
 
-You also need ffmpeg on your PATH; it's used to copy the original audio onto the output. On macOS:
+You also need **ffmpeg** on your PATH (used to copy the original audio onto the output):
 
 ```bash
-brew install ffmpeg
+brew install ffmpeg        # macOS
 ```
 
-If you have an NVIDIA GPU, install the GPU extra. It adds `onnxruntime-gpu` for the face/gender model and `torchcodec` for the CUDA video decode path:
+For clean silhouette-shaped blur you also want **SAM2**, which isn't on PyPI:
 
 ```bash
-pip install 'occlude[gpu]'
+pip install "git+https://github.com/facebookresearch/sam2.git"
 ```
 
-Python 3.10 or newer. It runs on CPU, Apple Silicon (MPS), and CUDA. On CUDA every stage runs on the GPU. On Apple Silicon the detector and segmenter use Metal but the face/gender model still falls back to CPU, so long videos are slow there too. Plain CPU gets slow fast past a short clip.
+Without SAM2, run with `--no-sam2` and the blur falls back to a soft feathered box around each person.
+
+Python 3.10+. **A CUDA GPU is strongly recommended** — OCCLUDE runs a heavy detector, SAM2, and a 7B vision-language model. On a single A100/H100 a feature-length video takes a few hours; on CPU/Apple Silicon it is only practical for short clips. Model weights download on first run.
 
 ## Usage
 
@@ -47,58 +68,45 @@ Python 3.10 or newer. It runs on CPU, Apple Silicon (MPS), and CUDA. On CUDA eve
 occlude --input video.mp4
 ```
 
-The output lands in the same directory, named `video_occluded.mp4`. Common options:
+The output lands next to the input as `video_occluded.mp4`. Common options:
 
 ```bash
-occlude --input video.mp4 --output cleaned.mp4         # custom output path
-occlude --input video.mp4 --blur-strength 99           # Gaussian kernel size, odd, default 199
-occlude --input video.mp4 --device cuda                # force CUDA, fail if unavailable
-occlude --input video.mp4 --perception-batch 6         # frames per GPU forward pass
-occlude --input video.mp4 --detector-model yolov8m.pt  # heavier detector, better recall
+occlude --input video.mp4 --output cleaned.mp4              # custom output path
+occlude --input video.mp4 --device cuda                     # force CUDA
+occlude --input video.mp4 --blur-strength 99                # Gaussian kernel, odd, default 199
+occlude --input video.mp4 --judge-batch 16                  # crops per VLM pass (throughput knob)
+occlude --input video.mp4 --judge-frames 5                  # frames judged per person (accuracy knob)
+occlude --input video.mp4 --judge-model Qwen/Qwen2.5-VL-7B-Instruct
+occlude --input video.mp4 --detector rtdetr-x.pt            # swap the person detector
+occlude --input video.mp4 --no-sam2                         # box blur instead of silhouette
 ```
 
-`--perception-batch` is the main speed knob for long content on a GPU. It still analyzes every frame, but bundles consecutive frames into one detector + segmenter pass so launch overhead amortizes across the batch. Default is 4 on CUDA, 1 elsewhere. `--detector-model` swaps the YOLO weights: the default `yolov8n.pt` is fastest, while `yolov8m.pt` or `yolov8l.pt` catch more small or odd-angle people at a throughput cost (a missed detection is a missed blur). There's also `--benchmark` (with `--seconds N`), which runs the pipeline on the first N seconds and prints fps, GPU utilization, peak VRAM, and a frame hash without writing a video. It's for tuning, not everyday use.
+`--judge-batch` is the main speed knob: it sets how many person-crops the VLM judges in one forward pass. `--judge-frames` trades a little speed for accuracy by judging more views of each person. `--detector` accepts any Ultralytics RT-DETR or YOLO weights.
 
 ### Running on Colab
 
-OCCLUDE is compute-heavy, so for anything long I run it on a Colab GPU runtime. `notebooks/occlude_colab.ipynb` is set up for that: open it in Colab, point it at your video, run the cells. It installs `occlude[gpu]`, repairs the `onnxruntime-gpu` install, and fails loudly if a stage can't bind CUDA.
-
-## How it works
-
-```
-input.mp4
-   -> YOLOv8 detects people, frame by frame
-   -> SegFormer segments each person crop into body parts and clothing
-   -> InsightFace estimates gender and age per person
-   -> rule check decides blur / no-blur for that person
-   -> silhouette-shaped pixelate + Gaussian blur if triggered
-   -> IoU tracking carries the decision across frames to stop flicker
-   -> ffmpeg muxes the original audio back on
-output_occluded.mp4
-```
-
-The tracker matches people across frames by bounding-box overlap and votes on gender and the blur decision over a short window, so one bad frame doesn't make the blur flicker on and off. If detection briefly drops a flagged person, their blur is carried forward a few frames so it doesn't pop.
+OCCLUDE is compute-heavy, so for anything long run it on a Colab GPU runtime. `notebooks/occlude_colab.ipynb` is set up for that: open it in Colab (GPU runtime), point it at your video, run the cells. It installs `occlude`, SAM2, and the model weights.
 
 ## Known limitations
 
-It works and I use it on real content, but it's early (version 0.0.1).
+It works and is usable, but it's early (version 0.1.0) and is a ground-up rearchitecture of the earlier per-frame version.
 
-- Accuracy is decent on clear cases (shirtless men, uncovered hair, bare arms in good lighting) and worse on hard ones: unusual angles, partial occlusion, low resolution, busy backgrounds.
-- It biases toward over-blurring under uncertainty, so expect false positives (a modestly dressed person blurred now and then) more often than misses.
-- It's terminal only. No GUI, no real-time, no browser extension.
-- It takes a local file. It won't download YouTube URLs.
-- It's not a general people-blur or object-removal tool. The blur is tied to the modesty rules above and only fires when they're triggered.
+- Accuracy is best on clear cases and worst on hard ones: tiny/distant people, heavy occlusion, low resolution, motion blur.
+- It biases toward over-blurring under uncertainty, so expect occasional false positives (a modestly dressed person blurred now and then) more often than misses.
+- Age estimation near the under-13 line is the least reliable signal; the child exemption is gated on the model agreeing across multiple frames.
+- It's terminal only, takes a local file (no YouTube URLs), and is not a general people-blur tool — the blur only fires when the modesty rules are triggered.
+- Hijab vs. uncovered-hair from behind / in profile remains the hardest case.
 
-Start with a short clip to confirm the output is what you want before committing to a full-length file. If you hit a consistent failure mode, an issue describing the content type is more useful than a general accuracy complaint.
+Start with a short clip to confirm the output is what you want before committing to a full-length file.
 
 ## Credits and license
 
 OCCLUDE is glue around three pretrained models:
 
-- person detection: YOLOv8 (`yolov8n` by default) via Ultralytics
-- body-part and clothing segmentation: SegFormer, [`mattmdjaga/segformer_b2_clothes`](https://huggingface.co/mattmdjaga/segformer_b2_clothes) on Hugging Face
-- face, gender, and age: InsightFace `buffalo_l`
+- person detection: [RT-DETR](https://docs.ultralytics.com/models/rtdetr/) via Ultralytics
+- segment + silhouette: [SAM 2](https://github.com/facebookresearch/sam2) (Segment Anything 2) from Meta
+- modesty / sex / age judgment: [Qwen2.5-VL](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct)
 
-Plus PyTorch, Transformers, OpenCV, NumPy, SciPy, ONNX Runtime, Pillow, tqdm, and rich. Model weights download on first run.
+Plus PyTorch, Transformers, OpenCV, NumPy, Pillow, tqdm, and rich.
 
-MIT licensed. Issues and PRs welcome at <https://github.com/anaxoniclabs/OCCLUDE/issues>. If a fellow muslim developer takes this further than I could, that's the outcome I'd be happiest with.
+MIT licensed (note the upstream model weights carry their own licenses). Issues and PRs welcome at <https://github.com/anaxoniclabs/OCCLUDE/issues>. If a fellow muslim developer takes this further than I could, that's the outcome I'd be happiest with.

@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.0.3] — 2026-06-18
+
+Ground-up rearchitecture from a per-frame streaming pipeline to an offline,
+three-pass design. Breaking change to the internals and the CLI. (Note: the
+older entries below use an internal 1.x numbering that predates the published
+0.0.x pip series; this 0.0.3 matches the pip package version.)
+
+### Why
+The v1 pipeline (YOLOv8n → SegFormer clothes → InsightFace gender/age →
+hand-tuned rules → IoU tracker) behaved like a real-time filter even though
+OCCLUDE works on a whole file offline. Most of its complexity existed only to
+approximate global knowledge from a one-frame-at-a-time view, and its worst
+errors came from stacking brittle single-purpose heads under a "blur on any
+uncertainty" policy: clean-shaven men read as women, children over-blurred, a
+CGI figure blurred, crowds shown from behind blurred into mud, and blur that
+flickered and engaged a beat late.
+
+### Changed
+- **Three offline passes** replace the streaming loop:
+  1. detect + track — RT-DETR (high recall) every frame; IoU association into
+     per-person tracklets, split at shot cuts.
+  2. judge — Qwen2.5-VL judges each tracklet once from its clearest frames and
+     returns a structured verdict (is_human / sex / age_bracket / blur).
+  3. render — the verdict is applied across the person's whole on-screen span;
+     SAM2 cuts a clean silhouette only for people being blurred; ffmpeg muxes
+     audio.
+- Deciding once per person and back-applying it removes flicker and the
+  "blurs late" lag by construction.
+- New CLI flags: `--detector`, `--judge-model`, `--judge-batch`,
+  `--judge-frames`, `--no-sam2`. Removed: `--perception-batch`,
+  `--detector-model`, `--require-cuda-io`, `--benchmark`/`--seconds`.
+
+### Removed
+- InsightFace gender/age, SegFormer clothing segmentation, the hand-tuned
+  RuleEngine, the IoU decision-tracker, the per-image eval harness, and the
+  CUDA NVDEC/NVENC I/O fast path (decode/encode go through OpenCV now; the
+  models are the bottleneck, not I/O).
+
+### Dependencies
+- Added: `accelerate`; bumped `transformers` (>=4.49), `torch` (>=2.4),
+  `ultralytics` (>=8.3). SAM2 installs from source (not on PyPI).
+- Dropped: `insightface`, `onnxruntime`, `scipy`, `torchcodec`.
+
 ## [1.2.0] — 2026-05-20
 
 ### Fixed

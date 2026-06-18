@@ -38,3 +38,6 @@ ralph-once.sh
 
 # macOS
 .DS_Store
+
+# IDE
+.idea/

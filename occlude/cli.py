@@ -3,8 +3,9 @@
 Usage:
     occlude --input <video> [--output <path>] [--blur-strength N]
 
-Detects immodestly dressed people frame-by-frame and writes a clean
-video with the original audio preserved. See OCCLUDE_SPEC.md.
+Detects immodestly dressed people with an offline three-pass pipeline
+(detect+track -> VLM judge -> render) and writes a clean video with the
+original audio preserved. See the README.
 """
 from __future__ import annotations
 
@@ -124,38 +125,42 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Gaussian blur kernel size (must be odd, default {DEFAULT_BLUR_KERNEL})",
     )
     parser.add_argument(
-        "--perception-batch", type=int, default=None,
-        help="bundle this many consecutive frames into one YOLO+SegFormer forward pass (default: 4 on CUDA, 1 elsewhere)",
-    )
-    parser.add_argument(
         "--device",
         choices=("auto", "cuda", "mps", "cpu"),
         default="auto",
         help="inference device (default: auto; CUDA is preferred when available)",
     )
     parser.add_argument(
-        "--detector-model",
+        "--detector",
         type=str,
         default=None,
         help=(
-            "YOLO person-detector weights (default yolov8n.pt). On a CUDA "
-            "box with spare VRAM, yolov8m.pt or yolov8l.pt improves recall "
-            "on small / distant / odd-angle people at some throughput cost; "
-            "a missed detection is a missed blur"
+            "person-detector weights (default rtdetr-x.pt). Any Ultralytics "
+            "RT-DETR or YOLO weights work; they download on first use. The "
+            "default is a high-recall transformer because a missed detection "
+            "is a missed blur"
         ),
     )
     parser.add_argument(
-        "--require-cuda-io",
-        action="store_true",
-        help="fail unless CUDA/NVDEC decode and NVENC encode are available",
+        "--judge-model",
+        type=str,
+        default=None,
+        help=(
+            "vision-language model id for the modesty judge "
+            "(default Qwen/Qwen2.5-VL-7B-Instruct)"
+        ),
     )
     parser.add_argument(
-        "--benchmark", action="store_true",
-        help="benchmark the first --seconds of the input and print fps, GPU util, peak VRAM, and a frame-hash MD5; no output video is produced",
+        "--judge-batch", type=int, default=None,
+        help="person crops judged per VLM forward pass (default 8); the main throughput knob",
     )
     parser.add_argument(
-        "--seconds", type=float, default=30.0,
-        help="benchmark duration in seconds (only used with --benchmark, default 30)",
+        "--judge-frames", type=int, default=None,
+        help="how many of each person's clearest frames the VLM judges (default 3)",
+    )
+    parser.add_argument(
+        "--no-sam2", action="store_true",
+        help="skip SAM2 silhouette segmentation and blur a feathered box instead (faster, coarser outline)",
     )
     return parser.parse_args(argv)
 
@@ -179,35 +184,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    if args.perception_batch is not None and args.perception_batch < 1:
-        print(
-            f"error: --perception-batch must be >= 1, got {args.perception_batch}",
-            file=sys.stderr,
-        )
-        return 1
-
     if shutil.which("ffmpeg") is None:
         print(
             "error: ffmpeg not found on PATH. Install via: brew install ffmpeg",
             file=sys.stderr,
         )
         return 1
-
-    if args.benchmark:
-        if args.seconds <= 0:
-            print(f"error: --seconds must be > 0, got {args.seconds}", file=sys.stderr)
-            return 1
-        from occlude.pipeline.bench import run_benchmark
-        try:
-            result = run_benchmark(input_path, seconds=args.seconds)
-        except KeyboardInterrupt:
-            print("\ncancelled by user.", file=sys.stderr)
-            return 130
-        except Exception as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 1
-        print(result.format_line())
-        return 0
 
     output_path: Path = args.output or (
         input_path.parent / f"{input_path.stem}_occluded.mp4"
@@ -218,14 +200,21 @@ def main(argv: list[str] | None = None) -> int:
     # multi-second model-loading cost.
     from occlude.pipeline.video import VideoProcessor
 
+    device = None if args.device == "auto" else args.device
+    kwargs: dict = {
+        "blur_kernel": args.blur_strength,
+        "device": device,
+        "detector_weights": args.detector,
+        "judge_model": args.judge_model,
+        "use_sam2": not args.no_sam2,
+    }
+    if args.judge_batch is not None:
+        kwargs["judge_batch"] = args.judge_batch
+    if args.judge_frames is not None:
+        kwargs["judge_frames"] = args.judge_frames
+
     try:
-        processor = VideoProcessor(
-            blur_kernel=args.blur_strength,
-            perception_batch=args.perception_batch,
-            device=args.device,
-            detector_model=args.detector_model,
-            require_cuda_io=args.require_cuda_io,
-        )
+        processor = VideoProcessor(**kwargs)
         processor.process(input_path, output_path)
     except KeyboardInterrupt:
         print("\ncancelled by user.", file=sys.stderr)

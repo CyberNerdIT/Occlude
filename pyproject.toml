@@ -1,6 +1,6 @@
 [project]
 name = "occlude"
-version = "0.0.2"
+version = "0.0.3"
 description = "Blur immodestly dressed people in videos. Video in, video out."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,16 +31,18 @@ classifiers = [
 ]
 
 dependencies = [
-    "transformers>=4.40",
-    "torch>=2.2",
-    "torchvision>=0.17",
+    # VLM modesty judge (Qwen2.5-VL needs a recent transformers + accelerate
+    # for device_map). Detector is Ultralytics RT-DETR. SAM2 (silhouette
+    # masks) is not on PyPI — install it from source for full quality, or run
+    # with --no-sam2 for a feathered-box blur. See the README.
+    "torch>=2.4",
+    "torchvision>=0.19",
+    "transformers>=4.49",
+    "accelerate>=0.30",
+    "ultralytics>=8.3",
+    "opencv-python>=4.9",
     "pillow>=10.0",
     "numpy>=1.24",
-    "ultralytics>=8.2",
-    "opencv-python>=4.9",
-    "insightface>=0.7",
-    "onnxruntime>=1.16",
-    "scipy>=1.10",
     "tqdm>=4.65",
     "rich>=13.0.0",
 ]
@@ -51,14 +53,10 @@ Repository = "https://github.com/anaxoniclabs/OCCLUDE"
 Issues     = "https://github.com/anaxoniclabs/OCCLUDE/issues"
 
 [project.optional-dependencies]
-# GPU: routes InsightFace's ONNX Runtime sessions onto CUDA and enables
-# torchcodec/NVDEC decode on the CUDA fast path. Not a core dependency:
-# onnxruntime-gpu has no macOS wheels and would break MPS/CPU installs.
-# CUDA users: pip install 'occlude[gpu]'.
-gpu = [
-    "onnxruntime-gpu>=1.16",
-    "torchcodec>=0.4; platform_system != 'Darwin'",
-]
+# SAM2 (clean silhouette masks) has no PyPI wheel; install it from source
+# when you want full-quality blur shaping:
+#   pip install "git+https://github.com/facebookresearch/sam2.git"
+# Everything else runs without it (use --no-sam2 for a feathered-box blur).
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",

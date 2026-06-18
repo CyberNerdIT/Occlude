@@ -1,26 +1,37 @@
-"""Pipeline package — perception, rules, blur, video.
+"""Pipeline package — the v2 offline, three-pass stack.
 
-The heavy model stack lives in submodules. Keep package import itself
+The heavy model stack lives in submodules. Keep the package import itself
 lightweight so `python -m occlude --help` can load constants without
-importing torch, OpenCV, Ultralytics, or Matplotlib-adjacent deps.
+importing torch, OpenCV, Ultralytics, transformers, or SAM2.
 """
 from importlib import import_module
 
 __all__ = [
-    "SEG_LABELS", "TARGET_LABELS", "Perception", "Perceiver", "Person",
-    "Decision", "RuleEngine",
-    "VideoProcessor", "Tracker", "blur_region",
+    # data model
+    "Detection", "Tracklet", "Verdict", "BBox",
+    # passes
+    "PersonDetector",          # Pass 1 detect
+    "TrackletBuilder", "SAM2Segmenter",  # Pass 1 track / Pass 3 segment
+    "ShotSegmenter",           # shot-cut detection
+    "VLMJudge",                # Pass 2 judge
+    "aggregate",               # Pass 2 verdict policy
+    "VideoProcessor", "blur_region",  # orchestrator + render
 ]
+
+_MODULE_OF = {
+    "Detection": "tracklets", "Tracklet": "tracklets", "Verdict": "tracklets",
+    "BBox": "tracklets",
+    "PersonDetector": "detect",
+    "TrackletBuilder": "track", "SAM2Segmenter": "track",
+    "ShotSegmenter": "scenes",
+    "VLMJudge": "judge",
+    "aggregate": "decide",
+    "VideoProcessor": "video", "blur_region": "video",
+}
 
 
 def __getattr__(name: str):  # noqa: ANN001
-    if name in {"SEG_LABELS", "TARGET_LABELS", "Perception", "Perceiver", "Person"}:
-        perception = import_module("occlude.pipeline.perception")
-        return getattr(perception, name)
-    if name in {"Decision", "RuleEngine"}:
-        rules = import_module("occlude.pipeline.rules")
-        return getattr(rules, name)
-    if name in {"VideoProcessor", "Tracker", "blur_region"}:
-        video = import_module("occlude.pipeline.video")
-        return getattr(video, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = _MODULE_OF.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(import_module(f"occlude.pipeline.{module}"), name)
