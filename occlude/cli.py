@@ -180,9 +180,20 @@ def main(argv: list[str] | None = None) -> int:
         from occlude.pipeline.progress import enable_machine_progress
         enable_machine_progress()
 
-    from occlude.ui.ascii_art import get_header_panel
-    console = Console()
-    console.print(get_header_panel())
+    # A GUI host (e.g. OpenShot) pipes our output through whatever encoding
+    # the OS provides - cp1252 on Windows - where the Unicode banner raises
+    # UnicodeEncodeError. Prefer replacing unencodable characters; if the
+    # banner still can't render, skip it rather than die before processing.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:  # noqa: BLE001 - stream may not support reconfigure
+            pass
+    try:
+        from occlude.ui.ascii_art import get_header_panel
+        Console().print(get_header_panel())
+    except Exception:  # noqa: BLE001 - the banner is cosmetic, never fatal
+        print("OCCLUDE")
 
     input_path: Path = args.input
     if not input_path.exists() or not input_path.is_file():
