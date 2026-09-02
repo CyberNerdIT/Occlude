@@ -95,3 +95,19 @@ def test_clear_verdict_leaves_person(tmp_path):
 
     # No blur applied: the person region keeps most of its detail.
     assert _region_variance(out) > 0.5 * in_var
+
+
+def test_segmenter_falls_back_when_sam2_missing(monkeypatch, capsys):
+    """pip install occlude has no sam2; render must degrade to box blur."""
+    from occlude.pipeline import video as video_mod
+
+    class _MissingSam2:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("No module named 'sam2'")
+
+    monkeypatch.setattr(video_mod, "SAM2Segmenter", _MissingSam2)
+    vp = VideoProcessor(use_sam2=True)
+    assert vp.segmenter is None
+    assert vp.segmenter is None  # sticky: no retry, no second warning
+    err = capsys.readouterr().err
+    assert err.count("sam2 is not installed") == 1

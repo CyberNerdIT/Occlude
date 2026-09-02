@@ -135,7 +135,20 @@ class VideoProcessor:
         if not self._use_sam2:
             return None
         if self._segmenter is None:
-            self._segmenter = SAM2Segmenter(device=self.device)
+            try:
+                self._segmenter = SAM2Segmenter(device=self.device)
+            except ImportError:
+                # SAM2 isn't on PyPI, so a plain `pip install occlude` lands
+                # here: degrade to feathered-box blur instead of failing the
+                # render after the expensive detect and judge passes.
+                print(
+                    "sam2 is not installed - using feathered-box blur instead "
+                    "of silhouettes. For silhouette blur: pip install "
+                    '"git+https://github.com/facebookresearch/sam2.git"',
+                    file=sys.stderr,
+                )
+                self._use_sam2 = False
+                return None
         return self._segmenter
 
     # --- public entry point ---------------------------------------------
