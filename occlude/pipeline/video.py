@@ -37,7 +37,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
-from tqdm import tqdm
 
 from occlude.pipeline.blur import blur_region
 from occlude.pipeline.config import DEFAULT_BLUR_KERNEL
@@ -48,6 +47,7 @@ from occlude.pipeline.detect import (
     PersonDetector,
 )
 from occlude.pipeline.judge import DEFAULT_JUDGE_MODEL, VLMJudge
+from occlude.pipeline.progress import pbar as make_pbar
 from occlude.pipeline.scenes import ShotSegmenter
 from occlude.pipeline.track import SAM2Segmenter, TrackletBuilder
 from occlude.pipeline.tracklets import BBox, Tracklet
@@ -166,7 +166,7 @@ class VideoProcessor:
     ) -> list[Tracklet]:
         builder = TrackletBuilder()
         shots = ShotSegmenter()
-        pbar = tqdm(
+        pbar = make_pbar(
             total=_pbar_total(total, max_frames),
             desc="Pass 1/3 detect+track", unit="frame",
         )
@@ -196,7 +196,7 @@ class VideoProcessor:
 
         # One sequential decode collects exactly those crops (no random seeks).
         crops_by_tid: dict[int, list[Image.Image]] = defaultdict(list)
-        pbar = tqdm(total=len(needed), desc="Pass 2/3 collect", unit="frame")
+        pbar = make_pbar(total=len(needed), desc="Pass 2/3 collect", unit="frame")
         try:
             for idx, frame_bgr in self._decode(input_path, max_frames):
                 wants = needed.get(idx)
@@ -215,7 +215,7 @@ class VideoProcessor:
             for crop in crops
         ]
         samples_by_tid: dict[int, list] = defaultdict(list)
-        pbar = tqdm(total=len(items), desc="Pass 2/3 judge", unit="crop")
+        pbar = make_pbar(total=len(items), desc="Pass 2/3 judge", unit="crop")
         try:
             for batch in _chunks(items, self.judge_batch):
                 verdicts = self.judge.judge_crops([c for _, c in batch])
@@ -260,7 +260,7 @@ class VideoProcessor:
             raise RuntimeError(f"could not open VideoWriter at {silent_path}")
 
         seg = self.segmenter
-        pbar = tqdm(
+        pbar = make_pbar(
             total=_pbar_total(total, max_frames),
             desc="Pass 3/3 render", unit="frame",
         )

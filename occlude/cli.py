@@ -162,11 +162,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-sam2", action="store_true",
         help="skip SAM2 silhouette segmentation and blur a feathered box instead (faster, coarser outline)",
     )
+    parser.add_argument(
+        "--machine-progress", action="store_true",
+        help=(
+            "emit machine-readable 'OCCLUDE-PROGRESS {json}' lines on stdout "
+            "for GUI frontends (e.g. the OpenShot integration); equivalent to "
+            "setting OCCLUDE_MACHINE_PROGRESS=1"
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+
+    if args.machine_progress:
+        from occlude.pipeline.progress import enable_machine_progress
+        enable_machine_progress()
 
     from occlude.ui.ascii_art import get_header_panel
     console = Console()

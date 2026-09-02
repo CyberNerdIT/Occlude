@@ -83,6 +83,18 @@ occlude --input video.mp4 --no-sam2                         # box blur instead o
 
 `--judge-batch` is the main speed knob: it sets how many person-crops the VLM judges in one forward pass. `--judge-frames` trades a little speed for accuracy by judging more views of each person. `--detector` accepts any Ultralytics RT-DETR or YOLO weights.
 
+### Using from OpenShot
+
+[Our OpenShot fork](https://github.com/CyberNerdIT/OpenShot) can run OCCLUDE automatically after exporting a video: check **"Blur immodest content with OCCLUDE"** in OpenShot's Export dialog and the exported file comes out with a blurred copy next to it (`<name>_occluded.mp4`). OpenShot finds OCCLUDE via the `occlude` command on your PATH (or the `OCCLUDE_COMMAND` environment variable), so a plain `pip install occlude` is enough.
+
+For any GUI frontend embedding OCCLUDE as a subprocess, `--machine-progress` (or `OCCLUDE_MACHINE_PROGRESS=1`) makes the pipeline emit parseable progress lines on stdout:
+
+```
+OCCLUDE-PROGRESS {"stage": "Pass 3/3 render", "done": 120, "total": 4000}
+```
+
+One line per whole-percent change per pass; every other stdout line is ordinary log text. `occlude.pipeline.progress.parse_progress_line` implements the parsing and imports without the heavy model dependencies.
+
 ### Running on Colab
 
 OCCLUDE is compute-heavy, so for anything long run it on a Colab GPU runtime. `notebooks/occlude_colab.ipynb` is set up for that: open it in Colab (GPU runtime), point it at your video, run the cells. It installs `occlude`, SAM2, and the model weights.

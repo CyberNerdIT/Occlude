@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Machine-readable progress** for GUI frontends: `--machine-progress` (or
+  `OCCLUDE_MACHINE_PROGRESS=1`) makes every pipeline pass emit
+  `OCCLUDE-PROGRESS {"stage", "done", "total"}` JSON lines on stdout,
+  throttled to whole-percent changes. `occlude.pipeline.progress` carries the
+  emitter and a dependency-light `parse_progress_line` for embedders.
+- **OpenShot integration**: the CyberNerdIT/OpenShot fork now offers a
+  "Blur immodest content with OCCLUDE" checkbox in its Export dialog, running
+  OCCLUDE on the exported file and consuming this progress stream.
+
 ## [0.0.3] — 2026-06-18
 
 Ground-up rearchitecture from a per-frame streaming pipeline to an offline,
