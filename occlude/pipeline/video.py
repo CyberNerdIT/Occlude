@@ -167,6 +167,7 @@ class VideoProcessor:
 
         tracklets = self._pass1_track(input_path, total, max_frames)
         self._pass2_judge(input_path, tracklets, max_frames)
+        _log_verdicts(tracklets)
         self._pass3_render(
             input_path, output_path, tracklets, fps, width, height, total,
             max_frames=max_frames, skip_mux=skip_mux,
@@ -387,6 +388,43 @@ class VideoProcessor:
         if tail:
             print(tail, file=sys.stderr)
         shutil.move(str(silent_video), str(output))
+
+
+# Cap the per-person verdict lines so a crowd scene can't flood the log.
+_VERDICT_LOG_MAX = 40
+
+
+def _log_verdicts(tracklets: list[Tracklet]) -> None:
+    """One auditable line per person: was it blurred, and why.
+
+    Written to stderr so it lands in host-application logs (the OpenShot
+    integration shows these lines live). This is the answer to "why did /
+    didn't it blur X" without re-running the pipeline.
+    """
+    blurred = sum(
+        1 for t in tracklets if t.verdict is not None and t.verdict.blur
+    )
+    print(
+        f"verdicts: {len(tracklets)} people tracked, {blurred} to blur, "
+        f"{len(tracklets) - blurred} left clear",
+        file=sys.stderr,
+    )
+    for t in tracklets[:_VERDICT_LOG_MAX]:
+        v = t.verdict
+        if v is None:
+            continue
+        span = f"frames {t.first_frame}-{t.last_frame}"
+        who = f"{v.sex or 'unknown-sex'}/{v.age_bracket}"
+        print(
+            f"  person {t.track_id} ({span}, {who}): "
+            f"{'BLUR' if v.blur else 'clear'} - {v.reason}",
+            file=sys.stderr,
+        )
+    if len(tracklets) > _VERDICT_LOG_MAX:
+        print(
+            f"  ... and {len(tracklets) - _VERDICT_LOG_MAX} more people",
+            file=sys.stderr,
+        )
 
 
 def _mask_crop(full_mask: np.ndarray, bbox: BBox) -> np.ndarray:

@@ -111,3 +111,19 @@ def test_segmenter_falls_back_when_sam2_missing(monkeypatch, capsys):
     assert vp.segmenter is None  # sticky: no retry, no second warning
     err = capsys.readouterr().err
     assert err.count("sam2 is not installed") == 1
+
+
+def test_verdict_summary_logged(tmp_path, capsys):
+    src = tmp_path / "in.mp4"
+    out = tmp_path / "out.mp4"
+    _make_video(src, person=True)
+
+    vp = VideoProcessor(
+        blur_kernel=7, use_sam2=False, detector=_FakeDetector(),
+        judge=_FakeJudge(blur=True),
+    )
+    vp.process(src, out, skip_mux=True)
+
+    err = capsys.readouterr().err
+    assert "people tracked, 1 to blur" in err
+    assert "BLUR" in err
